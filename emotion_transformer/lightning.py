@@ -1,9 +1,12 @@
 import logging
 
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Sequence
+
 logging.disable(logging.CRITICAL)
 import os
 import random
 import torch
+from torch import Tensor
 import pytorch_lightning as pl
 from test_tube import HyperOptArgumentParser
 from .dataloader import dataloader
@@ -83,7 +86,10 @@ class EmotionModel(pl.LightningModule):
 
         return scores_dict
 
-    def validation_end(self, outputs):
+    def validation_epoch_end(
+            self,
+            outputs: Union[List[Dict[str, Tensor]], List[List[Dict[str, Tensor]]]]
+    ) -> Dict[str, Dict[str, Tensor]]:
         """
         called at the end of validation to aggregate outputs
         :param outputs: list of individual outputs of each validation step
@@ -122,7 +128,10 @@ class EmotionModel(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         return self.validation_step(batch, batch_idx)
 
-    def test_end(self, outputs):
+    def test_epoch_end(
+            self,
+            outputs: Union[List[Dict[str, Tensor]], List[List[Dict[str, Tensor]]]]
+    ) -> Dict[str, Dict[str, Tensor]]:
         return self.validation_end(outputs)
 
     def configure_optimizers(self):
@@ -201,7 +210,6 @@ class EmotionModel(pl.LightningModule):
         return parser
 
 
-# Cell
 def get_args(model):
     """
     returns the HyperOptArgumentParser
