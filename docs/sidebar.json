@@ -1,8 +1,0 @@
-{
-  "emotion_transformer": {
-    "Overview": "/",
-    "Data ": "/dataloader",
-    "Model": "/model",
-    "PyTorch Lightning": "/lightning"
-  }
-}
