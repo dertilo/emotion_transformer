@@ -7,6 +7,8 @@ import pytorch_lightning as pl
 from test_tube import HyperOptArgumentParser
 from .dataloader import dataloader
 from .model import sentence_embeds_model, context_classifier_model, metrics, f1_score
+from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
+from pytorch_lightning.loggers.mlflow import MLFlowLogger
 
 class EmotionModel(pl.LightningModule):
     """
@@ -167,7 +169,7 @@ class EmotionModel(pl.LightningModule):
         parser.add_argument('--train_file', default=os.path.join(root_dir, 'data/clean_train.txt'), type=str)
         parser.add_argument('--val_file', default=os.path.join(root_dir, 'data/clean_val.txt'), type=str)
         parser.add_argument('--test_file', default=os.path.join(root_dir, 'data/clean_test.txt'), type=str)
-        parser.add_argument('--epochs', default=10, type=int, metavar='N',
+        parser.add_argument('--epochs', default=3, type=int, metavar='N',
                             help='number of total epochs to run')
         parser.add_argument('--seed', type=int, default=None,
                             help='seed for initializing training')
@@ -181,14 +183,14 @@ def get_args(model):
     """
     parent_parser = HyperOptArgumentParser(strategy='random_search', add_help = False)
 
-    root_dir = os.getcwd()
-    parent_parser.add_argument('--mode', type=str, default='default',
+    data_dir = os.getcwd()
+    parent_parser.add_argument('--mode', type=str, default='test',
                                choices=('default', 'test', 'hparams_search'),
                                help='supports default for train/test/val and hparams_search for a hyperparameter search')
-    parent_parser.add_argument('--save-path', metavar='DIR', default=os.path.join(root_dir, 'logs'), type=str,
+    parent_parser.add_argument('--save-path', metavar='DIR', default=os.environ['HOME'] + "/data/mlflow_experiments/mlruns", type=str,
                                help='path to save output')
-    parent_parser.add_argument('--gpus', type=str, default=None, help='which gpus')
-    parent_parser.add_argument('--distributed-backend', type=str, default=None, choices=('dp', 'ddp', 'ddp2'),
+    parent_parser.add_argument('--gpus', type=str, default='0,1', help='which gpus')
+    parent_parser.add_argument('--distributed-backend', type=str, default='ddp', choices=('dp', 'ddp', 'ddp2'),
                                help='supports three options dp, ddp, ddp2')
     parent_parser.add_argument('--use_16bit', dest='use_16bit', action='store_true',
                                help='if true uses 16 bit precision')
@@ -199,14 +201,21 @@ def get_args(model):
     parent_parser.add_argument('--track_grad_norm', dest='track_grad_norm', action='store_true',
                                help='inspect gradient norms')
 
-    parser = model.add_model_specific_args(parent_parser, root_dir)
+    parser = model.add_model_specific_args(parent_parser, data_dir)
     return parser
 
-# Cell
+def setup_mlflowlogger_and_checkpointer(hparams):
+    mlflow_logger = MLFlowLogger(experiment_name='exp_name',
+                                 tracking_uri=hparams.save_path)
+    run_id = mlflow_logger.run_id
+    checkpoints_folder = os.path.join(hparams.save_path, mlflow_logger._expt_id, run_id,
+                                      'checkpoints')
+    os.makedirs(checkpoints_folder, exist_ok=True)
+    checkpoint = ModelCheckpoint(filepath=checkpoints_folder,
+                                 monitor='val_loss', save_top_k=1)
+    return checkpoint, mlflow_logger, run_id
+
 def main(hparams, gpus = None):
-    """
-    Trains the Lightning model as specified in `hparams`
-    """
     model = EmotionModel(hparams)
 
     if hparams.seed is not None:
@@ -217,16 +226,23 @@ def main(hparams, gpus = None):
     early_stop_callback = pl.callbacks.EarlyStopping(monitor='val_loss', min_delta=0.00, patience=5,
                                         verbose=False, mode='min')
 
+    checkpoint, mlflow_logger, run_id = setup_mlflowlogger_and_checkpointer(
+        hparams)
 
-    trainer = pl.Trainer(default_save_path=hparams.save_path,
+    trainer = pl.Trainer(
+        logger=mlflow_logger,
+                        checkpoint_callback=checkpoint,
+                        default_save_path=hparams.save_path,
                         gpus=len(gpus.split(",")) if gpus else hparams.gpus,
                         distributed_backend=hparams.distributed_backend,
                         use_amp=hparams.use_16bit,
                         early_stop_callback=early_stop_callback,
                         max_nb_epochs=hparams.epochs,
+                        log_gpu_memory='all',
                         fast_dev_run=hparams.fast_dev_run,
                         track_grad_norm=(2 if hparams.track_grad_norm else -1))
     trainer.fit(model)
+    mlflow_logger.experiment.log_artifacts(run_id,checkpoint.dirpath)
 
     if hparams.mode == 'test':
         trainer.test()
