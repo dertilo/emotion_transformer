@@ -1,4 +1,5 @@
 import logging
+
 logging.disable(logging.CRITICAL)
 import os
 import random
@@ -9,6 +10,7 @@ from .dataloader import dataloader
 from .model import sentence_embeds_model, context_classifier_model, metrics, f1_score
 from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 from pytorch_lightning.loggers.mlflow import MLFlowLogger
+
 
 class EmotionModel(pl.LightningModule):
     """
@@ -21,41 +23,47 @@ class EmotionModel(pl.LightningModule):
         """
         super(EmotionModel, self).__init__()
         self.hparams = hparams
-        self.emo_dict = {'others': 0, 'sad': 1, 'angry': 2, 'happy': 3}
-        self.sentence_embeds_model = sentence_embeds_model(dropout = hparams.dropout)
-        self.context_classifier_model = context_classifier_model(self.sentence_embeds_model.embedding_size,
-                                                                 hparams.projection_size,
-                                                                 hparams.n_layers,
-                                                                 self.emo_dict,
-                                                                 dropout = hparams.dropout)
+        self.emo_dict = {"others": 0, "sad": 1, "angry": 2, "happy": 3}
+        self.sentence_embeds_model = sentence_embeds_model(dropout=hparams.dropout)
+        self.context_classifier_model = context_classifier_model(
+            self.sentence_embeds_model.embedding_size,
+            hparams.projection_size,
+            hparams.n_layers,
+            self.emo_dict,
+            dropout=hparams.dropout,
+        )
 
-
-    def forward(self, input_ids, attention_mask, labels = None):
+    def forward(self, input_ids, attention_mask, labels=None):
         """
         no special modification required for lightning, define as you normally would
         """
         if self.current_epoch < self.hparams.frozen_epochs:
             with torch.no_grad():
-                sentence_embeds = self.sentence_embeds_model(input_ids = input_ids,
-                                                             attention_mask = attention_mask)
+                sentence_embeds = self.sentence_embeds_model(
+                    input_ids=input_ids, attention_mask=attention_mask
+                )
         else:
-            sentence_embeds = self.sentence_embeds_model(input_ids = input_ids, attention_mask = attention_mask)
-        return self.context_classifier_model(sentence_embeds = sentence_embeds, labels = labels)
-
+            sentence_embeds = self.sentence_embeds_model(
+                input_ids=input_ids, attention_mask=attention_mask
+            )
+        return self.context_classifier_model(
+            sentence_embeds=sentence_embeds, labels=labels
+        )
 
     def training_step(self, batch, batch_idx):
         """
         Lightning calls this inside the training loop
         """
         input_ids, attention_mask, labels = batch
-        loss, _ = self.forward(input_ids = input_ids, attention_mask = attention_mask, labels = labels)
+        loss, _ = self.forward(
+            input_ids=input_ids, attention_mask=attention_mask, labels=labels
+        )
         # in DP mode (default) make sure if result is scalar, there's another dim in the beginning
         if self.trainer.use_dp or self.trainer.use_ddp2:
             loss = loss.unsqueeze(0)
 
-        tensorboard_logs = {'train_loss': loss}
-        return {'loss': loss, 'log': tensorboard_logs}
-
+        tensorboard_logs = {"train_loss": loss}
+        return {"loss": loss, "log": tensorboard_logs}
 
     def validation_step(self, batch, batch_idx):
         """
@@ -63,7 +71,9 @@ class EmotionModel(pl.LightningModule):
         """
         input_ids, attention_mask, labels = batch
 
-        loss, logits = self.forward(input_ids = input_ids, attention_mask = attention_mask, labels = labels)
+        loss, logits = self.forward(
+            input_ids=input_ids, attention_mask=attention_mask, labels=labels
+        )
         scores_dict = metrics(loss, logits, labels)
 
         # in DP mode (default) make sure if result is scalar, there's another dim in the beginning
@@ -89,21 +99,24 @@ class EmotionModel(pl.LightningModule):
                 metric_value = output[metric_name]
 
                 if self.trainer.use_dp or self.trainer.use_ddp2:
-                    if metric_name in ['tp', 'fp', 'fn']:
+                    if metric_name in ["tp", "fp", "fn"]:
                         metric_value = torch.sum(metric_value)
                     else:
                         metric_value = torch.mean(metric_value)
 
                 metric_total += metric_value
-            if metric_name in ['tp', 'fp', 'fn']:
+            if metric_name in ["tp", "fp", "fn"]:
                 tqdm_dict[metric_name] = metric_total
             else:
                 tqdm_dict[metric_name] = metric_total / len(outputs)
 
-
-        prec_rec_f1 = f1_score(tqdm_dict['tp'], tqdm_dict['fp'], tqdm_dict['fn'])
+        prec_rec_f1 = f1_score(tqdm_dict["tp"], tqdm_dict["fp"], tqdm_dict["fn"])
         tqdm_dict.update(prec_rec_f1)
-        result = {'progress_bar': tqdm_dict, 'log': tqdm_dict, 'val_loss': tqdm_dict["val_loss"]}
+        result = {
+            "progress_bar": tqdm_dict,
+            "log": tqdm_dict,
+            "val_loss": tqdm_dict["val_loss"],
+        }
         return result
 
     def test_step(self, batch, batch_idx):
@@ -116,38 +129,51 @@ class EmotionModel(pl.LightningModule):
         """
         returns the optimizer and scheduler
         """
-        opt_parameters = self.sentence_embeds_model.layerwise_lr(self.hparams.lr,
-                                                                 self.hparams.layerwise_decay)
-        opt_parameters += [{'params': self.context_classifier_model.parameters()}]
+        opt_parameters = self.sentence_embeds_model.layerwise_lr(
+            self.hparams.lr, self.hparams.layerwise_decay
+        )
+        opt_parameters += [{"params": self.context_classifier_model.parameters()}]
 
         optimizer = torch.optim.AdamW(opt_parameters, lr=self.hparams.lr)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
         return [optimizer], [scheduler]
 
-
     @pl.data_loader
     def train_dataloader(self):
-        return dataloader(self.hparams.train_file, self.hparams.max_seq_len,
-                          self.hparams.bs, self.emo_dict, use_ddp = self.use_ddp)
-
+        return dataloader(
+            self.hparams.train_file,
+            self.hparams.max_seq_len,
+            self.hparams.bs,
+            self.emo_dict,
+            use_ddp=self.use_ddp,
+        )
 
     @pl.data_loader
     def val_dataloader(self):
-        return dataloader(self.hparams.val_file, self.hparams.max_seq_len,
-                          self.hparams.bs, self.emo_dict, use_ddp = self.use_ddp)
-
+        return dataloader(
+            self.hparams.val_file,
+            self.hparams.max_seq_len,
+            self.hparams.bs,
+            self.emo_dict,
+            use_ddp=self.use_ddp,
+        )
 
     @pl.data_loader
     def test_dataloader(self):
-        return dataloader(self.hparams.test_file, self.hparams.max_seq_len,
-                          self.hparams.bs, self.emo_dict, use_ddp = self.use_ddp)
-
+        return dataloader(
+            self.hparams.test_file,
+            self.hparams.max_seq_len,
+            self.hparams.bs,
+            self.emo_dict,
+            use_ddp=self.use_ddp,
+        )
 
     @staticmethod
     def add_model_specific_args(parent_parser, root_dir):
         """
         parameters defined here will be available to the model through self.hparams
         """
+        # fmt: off
         parser = HyperOptArgumentParser(parents=[parent_parser])
 
         parser.opt_list('--bs', default=64, type=int, options=[32, 128, 256], tunable=True,
@@ -173,14 +199,17 @@ class EmotionModel(pl.LightningModule):
                             help='number of total epochs to run')
         parser.add_argument('--seed', type=int, default=None,
                             help='seed for initializing training')
+        # fmt: on
 
         return parser
+
 
 # Cell
 def get_args(model):
     """
     returns the HyperOptArgumentParser
     """
+    # fmt: off
     parent_parser = HyperOptArgumentParser(strategy='random_search', add_help = False)
 
     data_dir = os.getcwd()
@@ -202,20 +231,26 @@ def get_args(model):
                                help='inspect gradient norms')
 
     parser = model.add_model_specific_args(parent_parser, data_dir)
+    # fmt: on
     return parser
 
+
 def setup_mlflowlogger_and_checkpointer(hparams):
-    mlflow_logger = MLFlowLogger(experiment_name='exp_name',
-                                 tracking_uri=hparams.save_path)
+    mlflow_logger = MLFlowLogger(
+        experiment_name="exp_name", tracking_uri=hparams.save_path
+    )
     run_id = mlflow_logger.run_id
-    checkpoints_folder = os.path.join(hparams.save_path, mlflow_logger._expt_id, run_id,
-                                      'checkpoints')
+    checkpoints_folder = os.path.join(
+        hparams.save_path, mlflow_logger._expt_id, run_id, "checkpoints"
+    )
     os.makedirs(checkpoints_folder, exist_ok=True)
-    checkpoint = ModelCheckpoint(filepath=checkpoints_folder,
-                                 monitor='val_loss', save_top_k=1)
+    checkpoint = ModelCheckpoint(
+        filepath=checkpoints_folder, monitor="val_loss", save_top_k=1
+    )
     return checkpoint, mlflow_logger, run_id
 
-def main(hparams, gpus = None):
+
+def main(hparams, gpus=None):
     model = EmotionModel(hparams)
 
     if hparams.seed is not None:
@@ -223,26 +258,27 @@ def main(hparams, gpus = None):
         torch.manual_seed(hparams.seed)
         torch.backends.cudnn.deterministic = True
 
-    early_stop_callback = pl.callbacks.EarlyStopping(monitor='val_loss', min_delta=0.00, patience=5,
-                                        verbose=False, mode='min')
+    early_stop_callback = pl.callbacks.EarlyStopping(
+        monitor="val_loss", min_delta=0.00, patience=5, verbose=False, mode="min"
+    )
 
-    checkpoint, mlflow_logger, run_id = setup_mlflowlogger_and_checkpointer(
-        hparams)
+    checkpoint, mlflow_logger, run_id = setup_mlflowlogger_and_checkpointer(hparams)
 
     trainer = pl.Trainer(
         logger=mlflow_logger,
-                        checkpoint_callback=checkpoint,
-                        default_save_path=hparams.save_path,
-                        gpus=len(gpus.split(",")) if gpus else hparams.gpus,
-                        distributed_backend=hparams.distributed_backend,
-                        use_amp=hparams.use_16bit,
-                        early_stop_callback=early_stop_callback,
-                        max_nb_epochs=hparams.epochs,
-                        log_gpu_memory='all',
-                        fast_dev_run=hparams.fast_dev_run,
-                        track_grad_norm=(2 if hparams.track_grad_norm else -1))
+        checkpoint_callback=checkpoint,
+        default_save_path=hparams.save_path,
+        gpus=len(gpus.split(",")) if gpus else hparams.gpus,
+        distributed_backend=hparams.distributed_backend,
+        use_amp=hparams.use_16bit,
+        early_stop_callback=early_stop_callback,
+        max_nb_epochs=hparams.epochs,
+        log_gpu_memory="all",
+        fast_dev_run=hparams.fast_dev_run,
+        track_grad_norm=(2 if hparams.track_grad_norm else -1),
+    )
     trainer.fit(model)
-    mlflow_logger.experiment.log_artifacts(run_id,checkpoint.dirpath)
+    mlflow_logger.experiment.log_artifacts(run_id, checkpoint.dirpath)
 
-    if hparams.mode == 'test':
+    if hparams.mode == "test":
         trainer.test()
