@@ -138,7 +138,6 @@ class EmotionModel(pl.LightningModule):
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
         return [optimizer], [scheduler]
 
-    @pl.data_loader
     def train_dataloader(self):
         return dataloader(
             self.hparams.train_file,
@@ -148,7 +147,6 @@ class EmotionModel(pl.LightningModule):
             use_ddp=self.use_ddp,
         )
 
-    @pl.data_loader
     def val_dataloader(self):
         return dataloader(
             self.hparams.val_file,
@@ -158,7 +156,6 @@ class EmotionModel(pl.LightningModule):
             use_ddp=self.use_ddp,
         )
 
-    @pl.data_loader
     def test_dataloader(self):
         return dataloader(
             self.hparams.test_file,
