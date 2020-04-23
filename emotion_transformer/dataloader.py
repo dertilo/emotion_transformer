@@ -61,4 +61,4 @@ def dataloader(path, max_seq_len, batch_size, emo_dict, use_ddp = False, labels 
         train_sampler = None
 
     return DataLoader(dataset, batch_size=batch_size, shuffle=(train_sampler is None),
-                      sampler=train_sampler, num_workers=0)
+                      sampler=train_sampler, num_workers=3)
